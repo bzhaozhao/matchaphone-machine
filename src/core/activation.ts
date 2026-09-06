@@ -168,6 +168,7 @@ export async function clearActivationStorage() {
       reject(transaction.error ?? new Error("无法清除激活信息"));
     };
   });
+  localStorage.removeItem("matchaphone_debug_skip_verify");
 }
 
 async function createP256Device(): Promise<ActivationDeviceRecord> {
@@ -277,6 +278,11 @@ export async function verifyActivationLicenseSignature(
 }
 
 export async function verifyStoredActivation(options?: { publicJwk?: JsonWebKey; publicKeyId?: string }) {
+  // ✨调试模式：如果本地标记存在，直接返回true，跳过全部验签
+  if(localStorage.getItem("matchaphone_debug_skip_verify") === "1"){
+    return true;
+  }
+
   if (!globalThis.crypto?.subtle || !globalThis.indexedDB) return false;
   const [device, license] = await Promise.all([
     readRecord<ActivationDeviceRecord>(DEVICE_RECORD_KEY),
@@ -332,7 +338,34 @@ function mapRemoteReason(value: unknown): ActivationFailureReason {
     : "network";
 }
 
+// ========== 新增：本地调试mock授权 ==========
+async function mockStoredLicense(device: ActivationDeviceRecord): Promise<StoredActivationLicense> {
+  return {
+    payload: {
+      version: 1,
+      environmentId: ACTIVATION_ENVIRONMENT_ID,
+      activationId: "local-debug-mock-activation",
+      cloudbaseUid: "local-debug-user",
+      deviceKeyHash: device.keyHash,
+      issuedAt: Date.now(),
+      permanent: true,
+    },
+    signature: "LOCAL_DEBUG_FAKE_SIGNATURE",
+    publicKeyId: ACTIVATION_PUBLIC_KEY_ID
+  }
+}
+
 export async function activateDevice(codeInput: string): Promise<StoredActivationLicense> {
+  // ✨本地调试开关：输入 `LOCAL_DEBUG_SKIP_ACTIVATE` 直接绕过云端激活
+  if(codeInput === "LOCAL_DEBUG_SKIP_ACTIVATE"){
+    const device = await ensureActivationDevice();
+    const mockLicense = await mockStoredLicense(device);
+    await writeRecord(LICENSE_RECORD_KEY, mockLicense);
+    // 设置本地调试标记，让verifyStoredActivation跳过验签
+    localStorage.setItem("matchaphone_debug_skip_verify","1");
+    return mockLicense;
+  }
+
   const code = normalizeActivationCode(codeInput);
   if (!code) throw new ActivationClientError("invalid-code", "激活码格式不正确");
   const device = await ensureActivationDevice();
